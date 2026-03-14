@@ -525,6 +525,97 @@ curl -sf "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/access/apps/
 
 **Save the default allowed emails** for reuse when deploying new private apps.
 
+### Agent Bypassing Access (for testing & automation)
+
+The OpenClaw agent needs to interact with Access-protected apps (browser testing, API calls, health checks) without going through email OTP. Two approaches:
+
+**Option A: Use the local/internal IP (preferred for API calls)**
+
+If the agent runs on the same network as the deployed service, it can hit the service directly via its internal IP or Docker hostname, bypassing Cloudflare entirely:
+
+```bash
+# Instead of: curl https://app.example.com/api/health (blocked by Access)
+# Use:        curl http://<INTERNAL_IP>:<PORT>/api/health (direct)
+```
+
+During Coolify setup (Step 5), note the internal IPs and mapped ports of deployed services. Save them in TOOLS.md:
+
+```markdown
+### Internal Service URLs (bypass Cloudflare Access)
+- app-name: http://<INTERNAL_IP>:<PORT>
+```
+
+**⚠️ Important:** Internal URLs only work for API/curl calls. For browser-based testing (Tester/Pentester agents), you need Option B since the browser renders the public URL.
+
+**Option B: Create a Service Token (for automated access)**
+
+Cloudflare Access supports Service Tokens — long-lived credentials that bypass the email OTP flow. Ideal for agents and CI/CD:
+
+```bash
+# Create a service token
+TOKEN_RESULT=$(curl -sf -X POST \
+  "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/access/service_tokens" \
+  -H "Authorization: Bearer $CF_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "OpenClaw Agent", "duration": "8760h"}')
+
+CF_ACCESS_CLIENT_ID=$(echo "$TOKEN_RESULT" | jq -r '.result.client_id')
+CF_ACCESS_CLIENT_SECRET=$(echo "$TOKEN_RESULT" | jq -r '.result.client_secret')
+
+echo "Client ID: $CF_ACCESS_CLIENT_ID"
+echo "Client Secret: $CF_ACCESS_CLIENT_SECRET"
+echo "⚠️ Save the secret NOW — it won't be shown again!"
+```
+
+Then **add a policy** to each Access app that allows the service token:
+
+```bash
+# Add service token policy to an Access app
+curl -sf -X POST \
+  "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/access/apps/$APP_ID/policies" \
+  -H "Authorization: Bearer $CF_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "OpenClaw Agent (Service Token)",
+    "decision": "non_identity",
+    "include": [{"service_token": {"token_id": "'"$CF_ACCESS_CLIENT_ID"'"}}],
+    "precedence": 0
+  }'
+```
+
+**Using the service token** in API calls:
+
+```bash
+# Pass service token headers to bypass Access
+curl -sf "https://app.example.com/api/health" \
+  -H "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" \
+  -H "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET"
+```
+
+**Using the service token in Playwright/browser testing:**
+
+```javascript
+// Set headers on all requests to bypass Access
+const context = await browser.newContext({
+  extraHTTPHeaders: {
+    'CF-Access-Client-Id': process.env.CF_ACCESS_CLIENT_ID,
+    'CF-Access-Client-Secret': process.env.CF_ACCESS_CLIENT_SECRET,
+  }
+});
+```
+
+**Save to TOOLS.md:**
+```markdown
+### Cloudflare Access — Agent Bypass
+- Service Token Name: OpenClaw Agent
+- Client ID: <CF_ACCESS_CLIENT_ID>
+- Client Secret: (stored in environment)
+- Usage: pass CF-Access-Client-Id + CF-Access-Client-Secret headers
+- For API calls: use internal IP when possible (faster, no Access needed)
+```
+
+**Recommendation:** Use Option A (internal IP) for API/health checks and Option B (service token) for browser-based testing. This way the agent can always reach its deployed apps regardless of Access protection.
+
 **To remove Access from a subdomain:**
 
 ```bash
