@@ -16,7 +16,7 @@ A guided setup skill for new OpenClaw instances. When an OpenClaw agent reads th
 Point your OpenClaw agent at this repo:
 
 ```
-Read https://github.com/YOUR_USER/openclaw-bootstrap and follow the setup guide.
+Read https://github.com/Zebratic/openclaw-bootstrap and follow the setup guide.
 ```
 
 Or clone it into your workspace and tell the agent to read `SKILL.md`.
