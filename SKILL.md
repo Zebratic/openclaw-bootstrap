@@ -10,27 +10,152 @@ Tell the user upfront what you'll set up:
 🚀 OpenClaw Bootstrap — Full Environment Setup
 
 I'll walk you through setting up:
-1. System packages (gh, cloudflared, jq, playwright)
-2. GitHub CLI authentication + git identity
-3. Cloudflare Tunnel (connect your domain)
-4. Coolify PaaS integration (optional)
-5. LLM Proxy for sub-agents (optional)
-6. ClawHub skills installation
-7. Custom model config for sub-agents
-8. Browser automation (Playwright)
-9. Workspace files (TOOLS.md, USER.md, MEMORY.md, etc.)
-10. Agent pipeline (Architect, Coder, Reviewer, Tester, Pentester, Researcher)
+1. Environment detection (OS, arch, package manager)
+2. System packages (gh, cloudflared, jq, playwright)
+3. GitHub CLI authentication + git identity
+4. Cloudflare Tunnel (connect your domain)
+5. Coolify PaaS integration (optional)
+6. LLM Proxy for sub-agents (optional)
+7. ClawHub skills installation
+8. Custom model config for sub-agents
+9. Browser automation (Playwright)
+10. Workspace files (TOOLS.md, USER.md, MEMORY.md, etc.)
+11. Agent pipeline (Architect, Coder, Reviewer, Tester, Pentester, Researcher)
 
 Each step tests credentials before saving. You can skip optional steps.
 Ready? Let's go.
 ```
 
-## Step 1: System Packages
+## Step 1: Environment Detection
 
-Install required CLI tools. Check each first, only install what's missing.
+Before installing anything, investigate the system you're running on. This determines which commands to use throughout the entire setup.
 
 ```bash
-# Update package list
+echo "=== Environment Detection ==="
+
+# OS and distro
+echo -n "OS: " && uname -s
+echo -n "Kernel: " && uname -r
+echo -n "Arch: " && uname -m
+
+# Detect distro family
+if [ -f /etc/os-release ]; then
+  . /etc/os-release
+  echo "Distro: $NAME $VERSION_ID ($ID)"
+  echo "ID_LIKE: ${ID_LIKE:-$ID}"
+else
+  echo "Distro: Unknown (no /etc/os-release)"
+fi
+
+# Detect package manager
+echo -n "Package manager: "
+if command -v apt-get > /dev/null 2>&1; then
+  echo "apt (Debian/Ubuntu)"
+  PKG_MANAGER="apt"
+elif command -v pacman > /dev/null 2>&1; then
+  echo "pacman (Arch)"
+  PKG_MANAGER="arch"
+elif command -v dnf > /dev/null 2>&1; then
+  echo "dnf (Fedora/RHEL)"
+  PKG_MANAGER="dnf"
+elif command -v yum > /dev/null 2>&1; then
+  echo "yum (CentOS/RHEL)"
+  PKG_MANAGER="yum"
+elif command -v apk > /dev/null 2>&1; then
+  echo "apk (Alpine)"
+  PKG_MANAGER="apk"
+else
+  echo "Unknown"
+  PKG_MANAGER="unknown"
+fi
+
+# Container detection
+echo -n "Container: "
+if [ -f /.dockerenv ]; then
+  echo "Docker"
+elif grep -q "lxc" /proc/1/cgroup 2>/dev/null; then
+  echo "LXC"
+elif systemd-detect-virt --quiet 2>/dev/null; then
+  echo "$(systemd-detect-virt)"
+else
+  echo "bare metal / unknown"
+fi
+
+# Check available disk space
+echo -n "Disk free: " && df -h / | awk 'NR==2 {print $4}'
+
+# Check RAM
+echo -n "RAM: " && free -h | awk '/^Mem:/ {print $2}'
+
+# Check if running as root
+echo -n "User: " && whoami
+echo -n "Sudo: " && (command -v sudo > /dev/null && echo "available" || echo "not available")
+
+# Check what's already installed
+echo ""
+echo "=== Already Installed ==="
+for cmd in gh cloudflared node npm jq curl git python3 docker clawhub; do
+  if command -v "$cmd" > /dev/null 2>&1; then
+    VERSION=$($cmd --version 2>&1 | head -1)
+    echo "  ✅ $cmd — $VERSION"
+  else
+    echo "  ❌ $cmd — not installed"
+  fi
+done
+```
+
+**Save the results.** Tell the user what you found and note the distro family. Write it to a temporary reference:
+
+```bash
+# Save for use throughout setup
+cat > /tmp/openclaw-bootstrap-env.sh << 'EOF'
+# Detected during OpenClaw bootstrap
+DISTRO_FAMILY="<apt|arch|dnf|yum|apk>"
+DISTRO_NAME="<e.g., Ubuntu 24.04, Arch Linux, Debian 12>"
+ARCH="<x86_64|aarch64>"
+PKG_MANAGER="<apt|pacman|dnf|yum|apk>"
+IS_CONTAINER="<docker|lxc|none>"
+EOF
+```
+
+**Tell the user:**
+```
+🔍 Environment detected:
+  OS: <distro> (<arch>)
+  Package manager: <pkg_manager>
+  Running in: <container type or bare metal>
+  RAM: <amount> | Disk free: <amount>
+
+  Already installed: <list>
+  Need to install: <list>
+
+This guide defaults to Debian/Ubuntu (apt) commands.
+I'll adapt all commands for your system automatically.
+```
+
+**⚠️ Important:** Remember the detected `PKG_MANAGER` for ALL subsequent steps. When the guide shows `apt-get install`, adapt:
+- **Debian/Ubuntu:** `apt-get install -y <package>`
+- **Arch Linux:** `pacman -S --noconfirm <package>` (package names may differ!)
+- **Fedora/RHEL:** `dnf install -y <package>`
+- **Alpine:** `apk add <package>`
+
+Common package name differences:
+
+| Tool | Debian/Ubuntu | Arch Linux | Fedora/RHEL |
+|------|--------------|------------|-------------|
+| jq | `jq` | `jq` | `jq` |
+| curl | `curl` | `curl` | `curl` |
+| git | `git` | `git` | `git` |
+| GitHub CLI | `gh` (from repo) | `github-cli` (community) | `gh` (from repo) |
+| python3 | `python3` | `python` | `python3` |
+
+## Step 2: System Packages
+
+Install required CLI tools. Check each first, only install what's missing. **Use the package manager detected in Step 1.**
+
+### Debian/Ubuntu (apt)
+
+```bash
 apt-get update
 
 # GitHub CLI
@@ -45,7 +170,6 @@ apt-get update
 
 # Cloudflared
 (command -v cloudflared > /dev/null) || {
-  # Direct .deb install (works on any Debian/Ubuntu without needing lsb_release)
   ARCH=$(dpkg --print-architecture)
   curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${ARCH}.deb" \
     -o /tmp/cloudflared.deb
@@ -57,9 +181,83 @@ apt-get update
 apt-get install -y jq curl
 ```
 
+### Arch Linux (pacman)
+
+```bash
+pacman -Syu --noconfirm
+
+# GitHub CLI (from community repo)
+(command -v gh > /dev/null) || pacman -S --noconfirm github-cli
+
+# Cloudflared (from AUR — needs an AUR helper like yay/paru, or manual build)
+(command -v cloudflared > /dev/null) || {
+  if command -v yay > /dev/null; then
+    yay -S --noconfirm cloudflared-bin
+  elif command -v paru > /dev/null; then
+    paru -S --noconfirm cloudflared-bin
+  else
+    # Direct binary install as fallback
+    ARCH=$(uname -m)
+    case "$ARCH" in
+      x86_64) CF_ARCH="amd64" ;;
+      aarch64) CF_ARCH="arm64" ;;
+      *) CF_ARCH="amd64" ;;
+    esac
+    curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}" \
+      -o /usr/local/bin/cloudflared
+    chmod +x /usr/local/bin/cloudflared
+  fi
+}
+
+# Other essentials
+pacman -S --noconfirm jq curl
+```
+
+### Fedora/RHEL (dnf)
+
+```bash
+dnf check-update || true
+
+# GitHub CLI
+(command -v gh > /dev/null) || {
+  dnf install -y 'dnf-command(config-manager)'
+  dnf config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo
+  dnf install -y gh
+}
+
+# Cloudflared (direct binary)
+(command -v cloudflared > /dev/null) || {
+  ARCH=$(uname -m)
+  case "$ARCH" in
+    x86_64) CF_ARCH="amd64" ;;
+    aarch64) CF_ARCH="arm64" ;;
+    *) CF_ARCH="amd64" ;;
+  esac
+  curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}.rpm" \
+    -o /tmp/cloudflared.rpm
+  dnf install -y /tmp/cloudflared.rpm
+  rm /tmp/cloudflared.rpm
+}
+
+# Other essentials
+dnf install -y jq curl
+```
+
+### All platforms — verify
+
+After installing, verify everything:
+
+```bash
+echo "=== Installed Versions ==="
+gh --version 2>/dev/null || echo "❌ gh not installed"
+cloudflared --version 2>/dev/null || echo "❌ cloudflared not installed"
+jq --version 2>/dev/null || echo "❌ jq not installed"
+node --version 2>/dev/null || echo "❌ node not installed"
+```
+
 Tell the user what was installed and the versions of each tool.
 
-## Step 2: GitHub CLI
+## Step 3: GitHub CLI
 
 **Ask the user:**
 - "Please provide your GitHub Personal Access Token (PAT)."
@@ -110,7 +308,7 @@ git config --global user.email "<EMAIL>"
 
 **Save this rule to AGENTS.md:** "All git commits are authored as the user — never as the agent or OpenClaw."
 
-## Step 3: Cloudflare Tunnel (Optional)
+## Step 4: Cloudflare Tunnel (Optional)
 
 **Ask:** "Do you want to set up Cloudflare for custom domain routing? (yes/skip)"
 
@@ -216,7 +414,7 @@ Tell the user which subdomains are already taken.
 - Taken subdomains: <list>
 ```
 
-## Step 4: Coolify Integration (Optional)
+## Step 5: Coolify Integration (Optional)
 
 **Ask:** "Do you have a Coolify instance for app deployments? If yes, provide the URL and API token. (or skip)"
 - "Coolify URL (e.g., https://coolify.yourdomain.com):"
@@ -276,7 +474,7 @@ Tell the user what infrastructure was found.
 
 **Key lesson:** When deploying apps behind Cloudflare Tunnel, set the FQDN in Coolify to `http://` (not `https://`). Traefik adds an HTTPS redirect for `https://` FQDNs, which causes redirect loops when the tunnel already handles TLS.
 
-## Step 5: LLM Proxy (Optional)
+## Step 6: LLM Proxy (Optional)
 
 **Ask:** "Do you have an OpenAI-compatible LLM proxy for sub-agents? This allows sub-agents to use various models through a single endpoint. Provide the base URL and API key, or skip."
 - "Base URL (e.g., `https://proxy.yourdomain.com/v1` — include the `/v1` suffix):"
@@ -310,7 +508,7 @@ Show the model list to the user.
 - `gpt-4.1-mini` — cheap, decent quality  
 - `deepseek-chat` — very cheap, good for simple tasks
 
-## Step 6: ClawHub Skills
+## Step 7: ClawHub Skills
 
 Install recommended skills for a well-equipped agent:
 
@@ -332,9 +530,9 @@ Run each install and report which succeeded. Some may not exist yet on ClawHub �
 
 **Ask:** "Want to install additional skills? Browse https://clawhub.com for the full catalog."
 
-## Step 7: Custom Models Config
+## Step 8: Custom Models Config
 
-If an LLM proxy was configured in Step 5, generate and write `~/.openclaw/config.yaml`.
+If an LLM proxy was configured in Step 6, generate and write `~/.openclaw/config.yaml`.
 
 **Important:** This file may already exist with other settings. Read it first, then merge — don't overwrite.
 
@@ -403,7 +601,7 @@ openclaw gateway status
 
 If the gateway fails to start, check config.yaml syntax (YAML is whitespace-sensitive).
 
-## Step 8: Browser Automation (Playwright)
+## Step 9: Browser Automation (Playwright)
 
 Set up Playwright for browser-based testing and automation:
 
@@ -464,7 +662,7 @@ const { chromium } = require('playwright');
 "
 ```
 
-## Step 9: Workspace Files
+## Step 10: Workspace Files
 
 Generate starter workspace files. **Ask the user for personalization:**
 
@@ -552,7 +750,7 @@ If yes, create a starter HEARTBEAT.md:
 If nothing needs attention, reply HEARTBEAT_OK.
 ```
 
-## Step 10: Agent Pipeline
+## Step 11: Agent Pipeline
 
 Set up specialized sub-agents for a full build-to-deploy workflow. These agents are spawned by the main agent to handle specific roles.
 
@@ -675,11 +873,11 @@ sessions_spawn:
   runTimeoutSeconds: 300
 ```
 
-Replace `<PROVIDER>`, `<HEAVY_MODEL>`, `<CODING_MODEL>`, and `<CHEAP_MODEL>` with the user's actual provider and model IDs from Step 7.
+Replace `<PROVIDER>`, `<HEAVY_MODEL>`, `<CODING_MODEL>`, and `<CHEAP_MODEL>` with the user's actual provider and model IDs from Step 8.
 
 **Ask the user:** "Which model should each agent role use?"
 
-Suggest based on what they configured in Step 7:
+Suggest based on what they configured in Step 8:
 - **Architect:** Heaviest/smartest model (e.g., claude-opus, gpt-4.1)
 - **Coder/Reviewer/Tester/Pentester:** Mid-tier fast model (e.g., claude-sonnet, gpt-4.1-mini)
 - **Researcher:** Cheapest model (e.g., gpt-4.1-mini, deepseek-chat)

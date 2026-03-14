@@ -56,10 +56,10 @@ sessions_spawn:
 ## Customization
 
 These templates use `{{PLACEHOLDER}}` values that get filled in during bootstrap setup:
-- `{{GIT_USERNAME}}` / `{{GIT_EMAIL}}` — from Step 2 (GitHub setup)
-- `{{DOMAIN}}` — from Step 3 (Cloudflare setup)
-- `{{DEPLOYMENT_PLATFORM}}` — from Step 4 (Coolify or your platform)
-- `{{LLM_PROXY_URL}}` — from Step 5 (LLM proxy setup)
+- `{{GIT_USERNAME}}` / `{{GIT_EMAIL}}` — from Step 3 (GitHub setup)
+- `{{DOMAIN}}` — from Step 4 (Cloudflare setup)
+- `{{DEPLOYMENT_PLATFORM}}` — from Step 5 (Coolify or your platform)
+- `{{LLM_PROXY_URL}}` — from Step 6 (LLM proxy setup)
 - `{{GITHUB_USERNAME}}` — from Step 2
 
 The bootstrap SKILL.md handles replacing these with your actual values.
