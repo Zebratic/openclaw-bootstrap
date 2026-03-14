@@ -26,6 +26,24 @@ Each step tests credentials before saving. You can skip optional steps.
 Ready? Let's go.
 ```
 
+## Prerequisites
+
+Before starting, verify OpenClaw is installed and the gateway is running. This bootstrap assumes:
+- OpenClaw is already installed (`npm install -g openclaw`)
+- The onboarding wizard has been run (`openclaw onboard`)
+- The gateway is running (`openclaw gateway status`)
+- A channel (Telegram, Discord, etc.) is already connected
+
+If any of these aren't done, tell the user to complete them first — this guide handles everything *after* the basic OpenClaw setup.
+
+```bash
+# Quick prerequisite check
+echo "=== Prerequisites ==="
+command -v openclaw > /dev/null && echo "✅ OpenClaw installed" || { echo "❌ OpenClaw not installed — run: npm install -g openclaw"; exit 1; }
+openclaw gateway status 2>&1 | grep -qiE "running|active" && echo "✅ Gateway running" || echo "⚠️ Gateway not running — run: openclaw gateway start"
+test -f ~/.openclaw/openclaw.json && echo "✅ Config exists" || echo "⚠️ Run: openclaw onboard"
+```
+
 ## Step 1: Environment Detection
 
 Before installing anything, investigate the system you're running on. This determines which commands to use throughout the entire setup.
@@ -243,6 +261,46 @@ dnf check-update || true
 dnf install -y jq curl
 ```
 
+### Docker (all platforms)
+
+Docker is needed for local builds, database containers, and Coolify deployments.
+
+```bash
+(command -v docker > /dev/null) || {
+  curl -fsSL https://get.docker.com | sh
+  systemctl enable docker
+  systemctl start docker
+}
+docker --version
+```
+
+### Security Testing Tools (optional but recommended)
+
+These are used by the Pentester agent for vulnerability scanning:
+
+**Debian/Ubuntu:**
+```bash
+apt-get install -y nmap nikto sqlmap
+```
+
+**Arch Linux:**
+```bash
+pacman -S --noconfirm nmap nikto
+# sqlmap from AUR
+(command -v yay > /dev/null && yay -S --noconfirm sqlmap) || pip install sqlmap
+```
+
+**Fedora/RHEL:**
+```bash
+dnf install -y nmap nikto
+pip install sqlmap
+```
+
+**Lighthouse** (performance/SEO audits — all platforms):
+```bash
+npm install -g lighthouse
+```
+
 ### All platforms — verify
 
 After installing, verify everything:
@@ -253,6 +311,11 @@ gh --version 2>/dev/null || echo "❌ gh not installed"
 cloudflared --version 2>/dev/null || echo "❌ cloudflared not installed"
 jq --version 2>/dev/null || echo "❌ jq not installed"
 node --version 2>/dev/null || echo "❌ node not installed"
+docker --version 2>/dev/null || echo "❌ docker not installed"
+nmap --version 2>/dev/null | head -1 || echo "⏭️ nmap not installed (optional)"
+nikto -Version 2>/dev/null || echo "⏭️ nikto not installed (optional)"
+sqlmap --version 2>/dev/null || echo "⏭️ sqlmap not installed (optional)"
+lighthouse --version 2>/dev/null || echo "⏭️ lighthouse not installed (optional)"
 ```
 
 Tell the user what was installed and the versions of each tool.
@@ -703,6 +766,68 @@ Tell the user what infrastructure was found.
 
 **Key lesson:** When deploying apps behind Cloudflare Tunnel, set the FQDN in Coolify to `http://` (not `https://`). Traefik adds an HTTPS redirect for `https://` FQDNs, which causes redirect loops when the tunnel already handles TLS.
 
+### SSH Access to Infrastructure (Optional)
+
+If the Coolify server or other infrastructure is on a different machine, set up SSH access so the agent can manage things remotely.
+
+**Ask:** "Do you have other servers the agent should SSH into? (e.g., Coolify host, Proxmox, other LXCs)"
+
+If yes, for each host:
+- "Hostname or IP:"
+- "SSH user (usually root):"
+- "Do you have an SSH key, or should I generate one?"
+
+**Generate SSH key if needed:**
+
+```bash
+# Generate a dedicated key for the agent
+ssh-keygen -t ed25519 -f ~/.ssh/openclaw_ed25519 -N "" -C "openclaw-agent"
+echo "Public key (add to target host's ~/.ssh/authorized_keys):"
+cat ~/.ssh/openclaw_ed25519.pub
+```
+
+Tell the user to add the public key to the target host, or do it if the user provides current credentials.
+
+**Create SSH config:**
+
+```bash
+cat >> ~/.ssh/config << 'EOF'
+
+Host <ALIAS>
+  HostName <IP_OR_HOSTNAME>
+  User <USER>
+  IdentityFile ~/.ssh/openclaw_ed25519
+  StrictHostKeyChecking no
+EOF
+```
+
+**Test connection:**
+
+```bash
+ssh <ALIAS> "echo '✅ SSH connection works'" 2>/dev/null || echo "❌ SSH connection failed"
+```
+
+**For jump hosts** (e.g., accessing a LXC through Proxmox):
+
+```bash
+cat >> ~/.ssh/config << 'EOF'
+
+Host <INNER_ALIAS>
+  HostName <INNER_IP>
+  User root
+  IdentityFile ~/.ssh/openclaw_ed25519
+  ProxyJump <OUTER_ALIAS>
+  StrictHostKeyChecking no
+EOF
+```
+
+**Save to TOOLS.md:**
+```markdown
+### SSH Access
+- <ALIAS>: <IP> (user: <USER>, key: openclaw_ed25519)
+- <INNER_ALIAS>: <IP> via <OUTER_ALIAS> (ProxyJump)
+```
+
 ## Step 6: LLM Proxy (Optional)
 
 **Ask:** "Do you have an OpenAI-compatible LLM proxy for sub-agents? This allows sub-agents to use various models through a single endpoint. Provide the base URL and API key, or skip."
@@ -1113,12 +1238,110 @@ Suggest based on what they configured in Step 8:
 
 If no LLM proxy was set up, they can use their primary provider's models (e.g., `anthropic/claude-sonnet-4-6`).
 
-**Test agent spawning** — verify one agent can start:
+**Register agents in OpenClaw config:**
+
+The markdown templates define agent behavior, but agents also need to be registered in `~/.openclaw/openclaw.json` so the gateway knows about them. Read the existing config, then add entries to `agents.list`:
 
 ```bash
-# Quick test: spawn researcher with a trivial task
-# (The main agent would normally do this, but we verify the config works)
-openclaw status  # Ensure gateway is running with models loaded
+# Read existing openclaw.json
+OPENCLAW_JSON="$HOME/.openclaw/openclaw.json"
+cat "$OPENCLAW_JSON" | jq '.agents'
+```
+
+Add each agent to `agents.list` in openclaw.json. Use `jq` to merge without overwriting:
+
+```bash
+WORKSPACE="$HOME/.openclaw/workspace"
+MODEL="<PROVIDER>/<CODING_MODEL>"  # From Step 8
+
+# Create agent directories (for agent-specific config if needed)
+for agent in coder architect pentester tester researcher reviewer; do
+  mkdir -p "$HOME/.openclaw/agents/$agent/agent"
+done
+
+# Add agents to openclaw.json
+jq --arg ws "$WORKSPACE" --arg model "$MODEL" '
+.agents.list = (.agents.list // []) + [
+  {
+    "id": "coder",
+    "name": "Coder",
+    "workspace": $ws,
+    "agentDir": ($ws + "/../agents/coder/agent"),
+    "model": $model,
+    "heartbeat": {"every": "0"},
+    "identity": {"name": "Coder", "theme": "Senior full-stack developer — implements features, fixes bugs, ships clean code", "emoji": "💻"}
+  },
+  {
+    "id": "architect",
+    "name": "Architect",
+    "workspace": $ws,
+    "agentDir": ($ws + "/../agents/architect/agent"),
+    "model": $model,
+    "heartbeat": {"every": "0"},
+    "identity": {"name": "Architect", "theme": "Senior software architect — plans, designs, and coordinates development", "emoji": "📐"}
+  },
+  {
+    "id": "reviewer",
+    "name": "Reviewer",
+    "workspace": $ws,
+    "agentDir": ($ws + "/../agents/reviewer/agent"),
+    "model": $model,
+    "heartbeat": {"every": "0"},
+    "identity": {"name": "Reviewer", "theme": "Senior code reviewer — catches bugs, security issues, and bad patterns", "emoji": "🔎"}
+  },
+  {
+    "id": "tester",
+    "name": "Tester",
+    "workspace": $ws,
+    "agentDir": ($ws + "/../agents/tester/agent"),
+    "model": $model,
+    "heartbeat": {"every": "0"},
+    "identity": {"name": "Tester", "theme": "QA specialist — tests apps from a fresh user perspective", "emoji": "🧪"}
+  },
+  {
+    "id": "pentester",
+    "name": "Pentester",
+    "workspace": $ws,
+    "agentDir": ($ws + "/../agents/pentester/agent"),
+    "model": $model,
+    "heartbeat": {"every": "0"},
+    "identity": {"name": "Pentester", "theme": "Security specialist — tests for OWASP Top 10 vulnerabilities", "emoji": "🔓"}
+  },
+  {
+    "id": "researcher",
+    "name": "Researcher",
+    "workspace": $ws,
+    "agentDir": ($ws + "/../agents/researcher/agent"),
+    "model": $model,
+    "heartbeat": {"every": "0"},
+    "identity": {"name": "Researcher", "theme": "Market analyst and competitive intelligence specialist", "emoji": "🔍"}
+  }
+]' "$OPENCLAW_JSON" > /tmp/openclaw.json.tmp && mv /tmp/openclaw.json.tmp "$OPENCLAW_JSON"
+```
+
+**⚠️ Notes on agent config:**
+- `heartbeat.every: "0"` disables heartbeats for sub-agents (they're spawned on-demand, not persistent)
+- `agentDir` gives each agent its own directory for session state
+- The `model` should match a model configured in Step 8 — use a mid-tier model for most agents, heavier for Architect if desired
+- After adding agents, **restart the gateway:**
+
+```bash
+openclaw gateway restart
+openclaw gateway status
+```
+
+**Verify agents are registered:**
+
+```bash
+cat "$HOME/.openclaw/openclaw.json" | jq '.agents.list[].id'
+```
+
+Should list: `main`, `coder`, `architect`, `reviewer`, `tester`, `pentester`, `researcher`.
+
+**Test agent spawning** — verify the gateway recognizes the agents:
+
+```bash
+openclaw gateway status  # Should show agents loaded
 ```
 
 Tell the user the agents are ready and explain the workflow:

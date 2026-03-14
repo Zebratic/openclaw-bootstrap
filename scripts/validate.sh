@@ -20,6 +20,18 @@ check() {
   fi
 }
 
+optional() {
+  local name="$1"
+  shift
+  if "$@" > /dev/null 2>&1; then
+    echo "  ✅ $name"
+    ((PASS++))
+  else
+    echo "  ⏭️  $name (optional)"
+    ((SKIP++))
+  fi
+}
+
 skip() {
   echo "  ⏭️  $1 (skipped)"
   ((SKIP++))
@@ -30,6 +42,12 @@ echo "🔍 OpenClaw Bootstrap Validation"
 echo "================================"
 echo ""
 
+echo "Prerequisites:"
+check "openclaw installed" command -v openclaw
+check "gateway running" bash -c 'openclaw gateway status 2>&1 | grep -qiE "running|active"'
+check "openclaw.json exists" test -f "$HOME/.openclaw/openclaw.json"
+
+echo ""
 echo "System Packages:"
 check "gh CLI installed" command -v gh
 check "cloudflared installed" command -v cloudflared
@@ -37,6 +55,11 @@ check "node installed" command -v node
 check "jq installed" command -v jq
 check "curl installed" command -v curl
 check "clawhub installed" command -v clawhub
+optional "docker installed" command -v docker
+optional "nmap installed" command -v nmap
+optional "nikto installed" command -v nikto
+optional "sqlmap installed" command -v sqlmap
+optional "lighthouse installed" command -v lighthouse
 
 echo ""
 echo "GitHub:"
@@ -73,19 +96,88 @@ else
 fi
 
 echo ""
-echo "OpenClaw:"
-check "openclaw installed" command -v openclaw
-check "gateway running" bash -c 'openclaw gateway status 2>&1 | grep -qiE "running|active"'
-check "playwright chromium" bash -c 'npx playwright --version'
+echo "Browser:"
+optional "playwright chromium" bash -c 'npx playwright --version'
+if [ -f "$HOME/.openclaw/openclaw.json" ]; then
+  optional "browser enabled in config" bash -c 'jq -e ".browser.enabled == true" "$HOME/.openclaw/openclaw.json"'
+fi
+
+echo ""
+echo "OpenClaw Config:"
+if [ -f "$HOME/.openclaw/config.yaml" ]; then
+  check "config.yaml exists" test -f "$HOME/.openclaw/config.yaml"
+else
+  skip "config.yaml (no custom models configured)"
+fi
+
+echo ""
+echo "Agents:"
+if [ -f "$HOME/.openclaw/openclaw.json" ]; then
+  AGENT_COUNT=$(jq '.agents.list // [] | length' "$HOME/.openclaw/openclaw.json" 2>/dev/null || echo "0")
+  if [ "$AGENT_COUNT" -gt 1 ]; then
+    echo "  ✅ $AGENT_COUNT agents registered in openclaw.json"
+    ((PASS++))
+    # Check each expected agent
+    for agent in coder architect reviewer tester pentester researcher; do
+      if jq -e ".agents.list[] | select(.id == \"$agent\")" "$HOME/.openclaw/openclaw.json" > /dev/null 2>&1; then
+        echo "    ✅ $agent"
+      else
+        echo "    ❌ $agent (not registered)"
+        ((FAIL++))
+      fi
+    done
+  else
+    echo "  ⏭️  No sub-agents registered (optional)"
+    ((SKIP++))
+  fi
+fi
+
+WS="${OPENCLAW_WORKSPACE:-$HOME/.openclaw/workspace}"
+
+echo ""
+echo "Agent Templates:"
+if [ -d "$WS/agents" ]; then
+  for tmpl in architect.md coder.md reviewer.md tester.md pentester.md researcher.md; do
+    if [ -f "$WS/agents/$tmpl" ]; then
+      echo "  ✅ agents/$tmpl"
+      ((PASS++))
+    else
+      echo "  ❌ agents/$tmpl missing"
+      ((FAIL++))
+    fi
+  done
+else
+  skip "Agent templates directory (agents/)"
+fi
 
 echo ""
 echo "Workspace Files:"
-WS="${OPENCLAW_WORKSPACE:-$HOME/.openclaw/workspace}"
-[ -f "$WS/SOUL.md" ] && check "SOUL.md exists" test -f "$WS/SOUL.md" || skip "SOUL.md"
-[ -f "$WS/USER.md" ] && check "USER.md exists" test -f "$WS/USER.md" || skip "USER.md"
-[ -f "$WS/TOOLS.md" ] && check "TOOLS.md exists" test -f "$WS/TOOLS.md" || skip "TOOLS.md"
-[ -f "$WS/AGENTS.md" ] && check "AGENTS.md exists" test -f "$WS/AGENTS.md" || skip "AGENTS.md"
-[ -f "$WS/IDENTITY.md" ] && check "IDENTITY.md exists" test -f "$WS/IDENTITY.md" || skip "IDENTITY.md"
+for f in SOUL.md USER.md TOOLS.md AGENTS.md IDENTITY.md MEMORY.md; do
+  if [ -f "$WS/$f" ]; then
+    echo "  ✅ $f"
+    ((PASS++))
+  else
+    echo "  ❌ $f missing"
+    ((FAIL++))
+  fi
+done
+optional "memory/ directory" test -d "$WS/memory"
+
+echo ""
+echo "SSH:"
+if [ -f "$HOME/.ssh/config" ]; then
+  HOST_COUNT=$(grep -c "^Host " "$HOME/.ssh/config" 2>/dev/null || echo "0")
+  echo "  ✅ SSH config exists ($HOST_COUNT hosts)"
+  ((PASS++))
+else
+  skip "SSH config (no remote hosts configured)"
+fi
+
+echo ""
+echo "Docker:"
+if command -v docker > /dev/null 2>&1; then
+  optional "Docker daemon running" docker info
+fi
 
 echo ""
 echo "================================"
