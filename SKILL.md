@@ -19,6 +19,7 @@ I'll walk you through setting up:
 7. Custom model config for sub-agents
 8. Browser automation (Playwright)
 9. Workspace files (TOOLS.md, USER.md, MEMORY.md, etc.)
+10. Agent pipeline (Architect, Coder, Reviewer, Tester, Pentester, Researcher)
 
 Each step tests credentials before saving. You can skip optional steps.
 Ready? Let's go.
@@ -549,6 +550,164 @@ If yes, create a starter HEARTBEAT.md:
 ```markdown
 # HEARTBEAT.md
 If nothing needs attention, reply HEARTBEAT_OK.
+```
+
+## Step 10: Agent Pipeline
+
+Set up specialized sub-agents for a full build-to-deploy workflow. These agents are spawned by the main agent to handle specific roles.
+
+**Tell the user:**
+```
+🤖 Agent Pipeline Setup
+
+I'll set up 6 specialized sub-agents that work as a team:
+
+  Researcher  → Market research & competitor analysis
+  Architect   → System design & task breakdown
+  Coder       → Implementation, commits & pushes
+  Reviewer    → Code review, catches bugs & security issues
+  Tester      → Browser-based UX testing
+  Pentester   → Security audit (OWASP Top 10)
+
+The main agent orchestrates them — spawning each as needed
+and passing results between them.
+```
+
+**Copy agent templates to workspace:**
+
+The agent role files are in the `agents/` directory of this repo. Copy them to the workspace:
+
+```bash
+mkdir -p ~/.openclaw/workspace/agents
+cp agents/architect.md ~/.openclaw/workspace/agents/
+cp agents/coder.md ~/.openclaw/workspace/agents/
+cp agents/reviewer.md ~/.openclaw/workspace/agents/
+cp agents/tester.md ~/.openclaw/workspace/agents/
+cp agents/pentester.md ~/.openclaw/workspace/agents/
+cp agents/researcher.md ~/.openclaw/workspace/agents/
+cp agents/README.md ~/.openclaw/workspace/agents/
+```
+
+**Replace placeholders** with actual values from earlier steps:
+
+```bash
+WORKSPACE=~/.openclaw/workspace/agents
+
+# Replace Git identity (from Step 2)
+sed -i "s|{{GIT_USERNAME}}|<USERNAME>|g" "$WORKSPACE"/*.md
+sed -i "s|{{GIT_EMAIL}}|<EMAIL>|g" "$WORKSPACE"/*.md
+
+# Replace GitHub username
+sed -i "s|{{GITHUB_USERNAME}}|<USERNAME>|g" "$WORKSPACE"/*.md
+
+# Replace domain (from Step 3, if configured)
+sed -i "s|{{DOMAIN}}|<DOMAIN>|g" "$WORKSPACE"/*.md
+
+# Replace deployment platform (from Step 4)
+sed -i "s|{{DEPLOYMENT_PLATFORM}}|<PLATFORM>|g" "$WORKSPACE"/*.md
+
+# Replace LLM proxy URL (from Step 5, if configured)
+sed -i "s|{{LLM_PROXY_URL}}|<URL>|g" "$WORKSPACE"/*.md
+```
+
+**Create spawn reference** — write `agents/spawn.md` with the user's actual model config:
+
+```markdown
+# Agent Spawn Reference
+
+## Quick spawn patterns
+
+### Architect
+sessions_spawn:
+  label: architect
+  model: <PROVIDER>/<HEAVY_MODEL>
+  task: "Read agents/architect.md for your role.\n\n[PROJECT BRIEF]"
+  mode: run
+  runTimeoutSeconds: 300
+
+### Coder (sub-agent)
+sessions_spawn:
+  label: coder
+  model: <PROVIDER>/<CODING_MODEL>
+  task: "Read agents/coder.md for your role.\n\n[TASK]"
+  mode: run
+  runTimeoutSeconds: 600
+
+### Coder (via ACP / Claude Code — if available)
+sessions_spawn:
+  label: coder
+  runtime: acp
+  agentId: claude-code
+  task: "Read agents/coder.md for your role.\n\n[TASK]"
+  mode: run
+  runTimeoutSeconds: 600
+
+### Reviewer
+sessions_spawn:
+  label: reviewer
+  model: <PROVIDER>/<CODING_MODEL>
+  task: "Read agents/reviewer.md for your role.\n\n[REVIEW TARGET]"
+  mode: run
+  runTimeoutSeconds: 600
+
+### Tester
+sessions_spawn:
+  label: tester
+  model: <PROVIDER>/<CODING_MODEL>
+  task: "Read agents/tester.md for your role.\n\nTest: [URL]\nFocus: [areas]"
+  mode: run
+  runTimeoutSeconds: 600
+
+### Pentester
+sessions_spawn:
+  label: pentester
+  model: <PROVIDER>/<CODING_MODEL>
+  task: "Read agents/pentester.md for your role.\n\nTarget: [URL]\nSource: [repo]\nEndpoints: [routes]"
+  mode: run
+  runTimeoutSeconds: 600
+
+### Researcher
+sessions_spawn:
+  label: researcher
+  model: <PROVIDER>/<CHEAP_MODEL>
+  task: "Read agents/researcher.md for your role.\n\nResearch: [topic]"
+  mode: run
+  runTimeoutSeconds: 300
+```
+
+Replace `<PROVIDER>`, `<HEAVY_MODEL>`, `<CODING_MODEL>`, and `<CHEAP_MODEL>` with the user's actual provider and model IDs from Step 7.
+
+**Ask the user:** "Which model should each agent role use?"
+
+Suggest based on what they configured in Step 7:
+- **Architect:** Heaviest/smartest model (e.g., claude-opus, gpt-4.1)
+- **Coder/Reviewer/Tester/Pentester:** Mid-tier fast model (e.g., claude-sonnet, gpt-4.1-mini)
+- **Researcher:** Cheapest model (e.g., gpt-4.1-mini, deepseek-chat)
+
+If no LLM proxy was set up, they can use their primary provider's models (e.g., `anthropic/claude-sonnet-4-6`).
+
+**Test agent spawning** — verify one agent can start:
+
+```bash
+# Quick test: spawn researcher with a trivial task
+# (The main agent would normally do this, but we verify the config works)
+openclaw status  # Ensure gateway is running with models loaded
+```
+
+Tell the user the agents are ready and explain the workflow:
+```
+✅ Agent pipeline configured!
+
+How it works:
+1. You tell me to build something
+2. I spawn Researcher for market context (if needed)
+3. I spawn Architect to design the system
+4. I spawn Coder to implement (multiple rounds if needed)
+5. I spawn Reviewer to check the code
+6. I deploy, then spawn Tester for UX verification
+7. I spawn Pentester for security audit before launch
+
+You can also ask me to spawn any agent individually.
 ```
 
 ## Validation Checklist
