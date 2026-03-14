@@ -319,6 +319,8 @@ If yes:
 - `Zone : Zone : Read`
 - `Account : Cloudflare Tunnel : Edit`
 - `Account : Cloudflare Tunnel : Read`
+- `Account : Access: Apps and Policies : Edit`
+- `Account : Access: Apps and Policies : Read`
 
 **Test the token:**
 
@@ -403,6 +405,135 @@ curl -sf "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/dns_records?type=C
 
 Tell the user which subdomains are already taken.
 
+### Cloudflare Access (Zero Trust)
+
+Cloudflare Access lets you put authentication in front of any subdomain — perfect for private/internal apps. Users authenticate via email OTP (no passwords to manage) before reaching the app.
+
+**Ask:** "Do you want to set up Cloudflare Access for protecting private apps? (yes/skip)"
+- "This lets you put email-based login on any subdomain — no auth code needed in the app itself."
+
+If yes:
+
+**Ask:** "Which email addresses should have access to private apps? (comma-separated)"
+
+**Verify Access API works:**
+
+```bash
+# Test Access API access
+curl -sf "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/access/apps" \
+  -H "Authorization: Bearer $CF_TOKEN" | jq '.success'
+```
+
+If this returns `false` or errors, the token is missing Access permissions — tell the user to recreate the token with `Account : Access: Apps and Policies : Edit/Read`.
+
+**List existing Access apps:**
+
+```bash
+curl -sf "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/access/apps" \
+  -H "Authorization: Bearer $CF_TOKEN" | jq '.result[] | {id, name, domain}'
+```
+
+Tell the user what Access apps already exist.
+
+**How to create an Access app for a subdomain:**
+
+When the agent needs to protect a deployed app, it should:
+
+1. **Create an Access Application:**
+
+```bash
+SUBDOMAIN="app.example.com"  # The subdomain to protect
+APP_NAME="My Private App"
+
+APP_RESULT=$(curl -sf -X POST \
+  "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/access/apps" \
+  -H "Authorization: Bearer $CF_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"name\": \"$APP_NAME\",
+    \"domain\": \"$SUBDOMAIN\",
+    \"type\": \"self_hosted\",
+    \"session_duration\": \"24h\",
+    \"auto_redirect_to_identity\": true
+  }")
+
+APP_ID=$(echo "$APP_RESULT" | jq -r '.result.id')
+echo "Access App ID: $APP_ID"
+```
+
+2. **Create an Access Policy** (who can access):
+
+```bash
+# Email-based allow policy (users authenticate via email OTP)
+ALLOWED_EMAILS='["user1@example.com", "user2@example.com"]'
+
+curl -sf -X POST \
+  "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/access/apps/$APP_ID/policies" \
+  -H "Authorization: Bearer $CF_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"name\": \"Allowed Users\",
+    \"decision\": \"allow\",
+    \"include\": [{
+      \"email\": {\"email\": $(echo $ALLOWED_EMAILS | jq -r '.[0]')}
+    }],
+    \"precedence\": 1
+  }"
+```
+
+For multiple emails, use an email list:
+
+```bash
+# Build include array with multiple emails
+EMAILS=("user1@example.com" "user2@example.com" "user3@example.com")
+INCLUDE_JSON="["
+for email in "${EMAILS[@]}"; do
+  INCLUDE_JSON+='{"email":{"email":"'"$email"'"}},'
+done
+INCLUDE_JSON="${INCLUDE_JSON%,}]"
+
+curl -sf -X POST \
+  "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/access/apps/$APP_ID/policies" \
+  -H "Authorization: Bearer $CF_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"name\": \"Allowed Users\",
+    \"decision\": \"allow\",
+    \"include\": $INCLUDE_JSON,
+    \"precedence\": 1
+  }"
+```
+
+3. **Verify it's working:**
+
+```bash
+# Check the Access app was created
+curl -sf "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/access/apps/$APP_ID" \
+  -H "Authorization: Bearer $CF_TOKEN" | jq '{name: .result.name, domain: .result.domain, id: .result.id}'
+```
+
+**How authentication works for end users:**
+1. User visits `app.example.com`
+2. Cloudflare intercepts → shows email input
+3. User enters their email → receives OTP code
+4. User enters OTP → gets a session cookie (24h default)
+5. App sees authenticated traffic — no auth code needed in the app itself
+
+**When to use Access vs app-level auth:**
+- **Use Access** for: internal tools, dashboards, admin panels, staging environments, anything only you/your team uses
+- **Use app-level auth** for: public-facing apps where users create accounts, apps with different permission levels, apps with user-specific data
+
+**Save the default allowed emails** for reuse when deploying new private apps.
+
+**To remove Access from a subdomain:**
+
+```bash
+# Delete the Access app (removes protection)
+curl -sf -X DELETE \
+  "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/access/apps/$APP_ID" \
+  -H "Authorization: Bearer $CF_TOKEN"
+```
+
 **Save to TOOLS.md:**
 ```markdown
 ### Cloudflare
@@ -412,6 +543,13 @@ Tell the user which subdomains are already taken.
 - Domain: <DOMAIN>
 - Tunnel ID: <TUNNEL_ID>
 - Taken subdomains: <list>
+
+### Cloudflare Access (Zero Trust)
+- Account ID: <ACCOUNT_ID>
+- Default allowed users: <email1>, <email2>
+- Auth method: email OTP
+- For private apps: create Access app + policy per subdomain
+- For public apps: skip Access setup
 ```
 
 ## Step 5: Coolify Integration (Optional)
